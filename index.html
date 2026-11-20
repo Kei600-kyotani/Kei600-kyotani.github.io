@@ -108,8 +108,8 @@ button.warn{border-color:#8b2020;background:#ffe6e6}
 //               例) {name:"新大阪",lat:..,lon:..,mark:"6"}  /  {name:"京都",lat:..,lon:..,mark:{"8":"B","4":"A"}}
 // 駅座標は概略値。デモ用の直線距離判定であり、実際の線路形状・キロ程ではありません。
 const DEFAULT_CARS=[2,4,6,8,12];
-// 停目確認のアナウンス文。{m} が駅ごとの固定停目に置き換わる(表示は SUB、音声は VOICE)
-const STOPMARK_SUB="固定停目 {m}", STOPMARK_VOICE="停目確認。固定停目、{m}";
+// 停目確認のアナウンス文。{m} が駅ごとの固定停目に置き換わる(表示は SUB、音声は VOICE)。音声は「停目」を「ていもく」と読ませるため、ひらがなで書いている
+const STOPMARK_SUB="固定停目 {m}", STOPMARK_VOICE="ていもく確認。固定ていもく、{m}";
 const ROUTES={
  kyoto:{
   name:"JR京都線（テストデータ）",
@@ -267,7 +267,7 @@ function render(){
   const mk=markOf(R.st[ni],S.cars);
   $("main").classList.add("alert");$("station").textContent="停目確認";
   $("subline").textContent=mk?STOPMARK_SUB.replace("{m}",mk):S.cars+"両停車";
-  speak(mk?STOPMARK_VOICE.replace("{m}",mk.replace(/[×✕✗]/g,"バツ")):"停目確認。"+S.cars+"両停車","stopmark-"+ni);
+  speak(mk?STOPMARK_VOICE.replace("{m}",mk.replace(/[×✕✗]/g,"バツ")):"ていもく確認。"+S.cars+"両停車","stopmark-"+ni);
  }else if(d<=lim1){
   $("main").classList.add("alert");$("station").textContent="停　車";$("subline").textContent="停車位置案内（シミュレーション）";
   speak("停車、停車、停車","brake-"+ni);
