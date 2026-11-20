@@ -90,6 +90,7 @@ button.warn{border-color:#8b2020;background:#ffe6e6}
    <button class="action warn" id="close">閉じる</button>
   </div>
   <div class="readout" id="gpsreadout">GPS位置：未取得</div>
+  <div class="readout">※「GPS位置取得開始」で現在地に連動した案内になります。シミュレーション用で、実際の運転・運行の判断には使用しないでください。</div>
   <div class="note"><b>重要：</b>これは個人学習用の画面・動作サンプルです。実際の鉄道事業者の装置画面や制御ロジックを再現・認証したものではありません。GPS誤差・通信断・端末性能などにより誤表示するため、実車・営業運転・線路内での使用、運転判断や安全確認への利用は絶対にしないでください。石山坂本線の座標は一部を含む概略テスト値です。</div>
  </div>
 </div>
@@ -176,8 +177,10 @@ function dist(a,b){const R=6371000,dLat=rad(b.lat-a.lat),dLon=rad(b.lon-a.lon),x
 // pos       : 始発駅からの走行距離(m)。駅間の直線距離を積み上げた「疑似キロ程」
 // departIdx : 直前に停車した(または始発の)駅の番号
 // dwell     : 停車中の残りtick数(0なら走行中)
+// source    : 位置の入力元 "demo"(疑似走行) / "gps"(現在地)。gpsState: wait(測位中) low(精度低) off(路線外) ok
 const TICK=0.5, DWELL_TICKS=8;           // 0.5秒刻み、停車時間は約4秒
-const S={lineKey:"kyoto",direction:"east",kind:"普通",cars:8,trainNo:"3420M",demoSpeed:65,pos:0,departIdx:0,dwell:0,speed:0,finished:false};
+const S={lineKey:"kyoto",direction:"east",kind:"普通",cars:8,trainNo:"3420M",demoSpeed:65,pos:0,departIdx:0,dwell:0,speed:0,finished:false,
+ source:"demo",gpsState:"wait",gpsReady:false,gpsSpeed:null,speedKnown:true,offDist:0};
 // 種別画像：メニューの「種別画像を設定」で選んだ画像は、このブラウザに保存されます(localStorage)。
 // ファイルに直接書く場合は、種別名→画像パス/データURIで指定します。 例: {"新快速":"images/shinkaisoku.png"}
 const KIND_IMAGES_BUILTIN={
@@ -190,7 +193,7 @@ let userKindImages={},lastSvcKey="";
 try{userKindImages=JSON.parse(localStorage.getItem("kindImages")||"{}")||{}}catch(e){}
 const imageOf=k=>userKindImages[k]||KIND_IMAGES_BUILTIN[k]||"";
 function saveKindImages(){try{localStorage.setItem("kindImages",JSON.stringify(userKindImages));return true}catch(e){return false}}
-let R=null,demoTimer=null,watchId=null,gpsPoint=null,spoken=new Set();
+let R=null,demoTimer=null,watchId=null,gpsPoint=null,lastFix=null,spoken=new Set();
 
 function readSettings(){
  S.lineKey=$("route").value;S.direction=$("direction").value;S.kind=$("kind").value;
@@ -201,7 +204,9 @@ function buildRoute(){
  const base=ROUTES[S.lineKey].stations;
  const st=S.direction==="east"?base:[...base].reverse();
  const cum=[0];for(let i=1;i<st.length;i++)cum.push(cum[i-1]+dist(st[i-1],st[i]));
- R={st,cum};
+ // 路線外とみなす距離：駅間が長い路線ほど直線近似のずれが大きいので緩める(300〜1500m)
+ let maxSeg=0;for(let i=1;i<cum.length;i++)maxSeg=Math.max(maxSeg,cum[i]-cum[i-1]);
+ R={st,cum,offLimit:Math.min(1500,Math.max(300,maxSeg*0.15))};
 }
 // stop 未指定の駅は全種別が停車
 const stopsAt=(st,kind)=>!st.stop||st.stop.includes(kind);
@@ -226,12 +231,20 @@ function renderService(){
 function render(){
  renderService();
  $("trainno").textContent=S.trainNo;$("cars").textContent=S.cars;
- $("speed").textContent=Math.round(S.speed);
+ $("speed").textContent=S.speedKnown?Math.round(S.speed):"--";
  $("main").classList.remove("alert");
  const last=R.st.length-1;
- if(S.finished){$("station").textContent=R.st[last].name;$("subline").textContent="デモ区間終了";$("distance").textContent="--";return}
+ if(S.source==="gps"&&S.gpsState!=="ok"&&!S.finished){
+  const off=S.gpsState==="off";
+  $("station").textContent=off?"路線外":"測位中";
+  $("subline").textContent=off?"路線から約"+Math.round(S.offDist)+"m離れています":S.gpsState==="low"?"GPS精度が低いため待機中":"GPS測位中…";
+  $("distance").textContent="--";return
+ }
+ if(S.finished){$("station").textContent=R.st[last].name;$("subline").textContent=S.source==="gps"?"終点":"デモ区間終了";$("distance").textContent="--";return}
  if(S.dwell>0){$("station").textContent=R.st[S.departIdx].name;$("subline").textContent="停車中";$("distance").textContent="--";return}
  const ni=nextStopIdx(S.departIdx),d=Math.max(0,R.cum[ni]-S.pos);
+ // GPS：ほぼ停止していて次の停車駅の60m以内なら「停車中」
+ if(S.source==="gps"&&S.gpsSpeed!=null&&S.gpsSpeed<1&&d<=60){$("station").textContent=R.st[ni].name;$("subline").textContent="停車中";$("distance").textContent="--";return}
  setDistance(d);
  // 短い駅間でも出発直後に警告が出ないよう、案内距離を駅間の長さに合わせて縮める
  const seg=R.cum[ni]-R.cum[S.departIdx],lim1=Math.min(800,seg*0.5),lim2=Math.min(200,seg*0.2);
@@ -258,7 +271,38 @@ function demoTick(){
  render();
 }
 function stopDemo(){if(demoTimer){clearInterval(demoTimer);demoTimer=null}}
-function resetState(){S.pos=0;S.departIdx=0;S.dwell=0;S.speed=0;S.finished=false;spoken.clear();render()}
+function resetState(){S.pos=0;S.departIdx=0;S.dwell=0;S.speed=0;S.finished=false;S.gpsState="wait";S.gpsReady=false;S.speedKnown=true;spoken.clear();render()}
+
+// ---- GPS連動 --------------------------------------------------------
+// 現在地を路線(駅を結んだ折れ線)に投影し、始発からの距離 pos と、路線からのずれ off を求める
+function project(p){
+ const kx=111320*Math.cos(rad(p.lat)),ky=110540;
+ const xy=q=>[(q.lon-p.lon)*kx,(q.lat-p.lat)*ky];
+ let best=null;
+ for(let i=0;i<R.st.length-1;i++){
+  const [ax,ay]=xy(R.st[i]),[bx,by]=xy(R.st[i+1]),dx=bx-ax,dy=by-ay,L2=dx*dx+dy*dy;
+  const t=L2?Math.max(0,Math.min(1,(-ax*dx-ay*dy)/L2)):0;
+  const off=Math.hypot(ax+t*dx,ay+t*dy);
+  if(!best||off<best.off)best={off,pos:R.cum[i]+t*(R.cum[i+1]-R.cum[i])};
+ }
+ return best;
+}
+// GPSの1回分の測位を案内状態に反映する
+function applyGps(p){
+ if(S.source!=="gps"||!p)return;
+ const last=R.st.length-1,c=p.coords;
+ S.gpsSpeed=c.speed==null?null:c.speed;S.speedKnown=c.speed!=null;S.speed=c.speed==null?0:c.speed*3.6;
+ if(c.accuracy>200){if(!S.gpsReady)S.gpsState="low";render();return} // 精度が低い測位は使わない
+ const pr=project({lat:c.latitude,lon:c.longitude});
+ if(pr.off>R.offLimit){S.gpsState="off";S.offDist=pr.off;render();return}
+ S.gpsState="ok";S.pos=pr.pos;
+ // 直前に発車した停車駅：その駅を40m以上通り過ぎたら「発車済み」とみなす(駅座標が概略値のため余裕を持たせる)
+ let dep=0;for(let i=0;i<=last;i++)if((i===0||stopsAt(R.st[i],S.kind))&&R.cum[i]+40<=S.pos)dep=i;
+ S.departIdx=S.gpsReady?Math.max(S.departIdx,dep):dep; // 測位が揺れても駅は戻さない
+ S.gpsReady=true;
+ S.finished=S.pos>=R.cum[last]-30;if(S.finished)S.departIdx=last;
+ render();
+}
 
 $("openmenu").onclick=()=>$("overlay").classList.add("open");
 $("close").onclick=()=>$("overlay").classList.remove("open");
@@ -314,9 +358,10 @@ $("kindimgdel").onclick=()=>{
  $("gpsreadout").textContent="「"+k+"」の画像を削除しました";lastSvcKey="";render();
 };
 $("demospeed").onchange=()=>{S.demoSpeed=Number($("demospeed").value)};
-$("apply").onclick=()=>{readSettings();buildRoute();resetState()};
+$("apply").onclick=()=>{readSettings();buildRoute();resetState();applyGps(lastFix)};
 $("demostart").onclick=()=>{
  stopDemo();
+ if(S.source==="gps"){S.source="demo";resetState()}
  if(S.finished)resetState();
  S.demoSpeed=Number($("demospeed").value);
  if(!("speechSynthesis"in window))$("gpsreadout").textContent="このブラウザでは音声読み上げに対応していません";
@@ -327,13 +372,14 @@ $("gpsstart").onclick=()=>{
  if(!navigator.geolocation){$("gpsreadout").textContent="Geolocation API非対応";return}
  if(!window.isSecureContext){$("gpsreadout").textContent="GPS取得にはHTTPSまたはlocalhostが必要です";return}
  if(watchId!==null)navigator.geolocation.clearWatch(watchId);
+ stopDemo();S.source="gps";lastFix=null;resetState();
  watchId=navigator.geolocation.watchPosition(p=>{
   gpsPoint={lat:p.coords.latitude,lon:p.coords.longitude};$("gpsdot").classList.add("on");$("gpslabel").textContent="GPS取得中";
   $("gpsreadout").textContent=`GPS位置：${gpsPoint.lat.toFixed(5)}, ${gpsPoint.lon.toFixed(5)} ／ 精度 約${Math.round(p.coords.accuracy)}m ／ 速度 ${p.coords.speed==null?"不明":Math.round(p.coords.speed*3.6)+"km/h"}`;
-  // GPSは位置・精度の確認表示のみ。停車警告や運転判断には接続しません。
+  lastFix=p;applyGps(p);
  },e=>{$("gpsreadout").textContent="GPS取得エラー："+e.message;$("gpsdot").classList.remove("on");$("gpslabel").textContent="GPSエラー"},{enableHighAccuracy:true,maximumAge:2000,timeout:12000});
 };
-$("gpsstop").onclick=()=>{if(watchId!==null)navigator.geolocation.clearWatch(watchId);watchId=null;$("gpsdot").classList.remove("on");$("gpslabel").textContent="GPS停止";$("gpsreadout").textContent="GPS位置取得を停止しました";};
+$("gpsstop").onclick=()=>{if(watchId!==null)navigator.geolocation.clearWatch(watchId);watchId=null;if(S.source==="gps"){S.source="demo";lastFix=null;resetState()}$("gpsdot").classList.remove("on");$("gpslabel").textContent="GPS停止";$("gpsreadout").textContent="GPS位置取得を停止しました";};
 document.addEventListener("visibilitychange",()=>{if(document.hidden)stopDemo()});
 if("wakeLock"in navigator){let lock;const requestLock=async()=>{try{lock=await navigator.wakeLock.request("screen")}catch(e){}};document.addEventListener("visibilitychange",()=>{if(!document.hidden)requestLock()});requestLock()}
 populateRoutes();applyRouteDefaults("kyoto");readSettings();buildRoute();render();
