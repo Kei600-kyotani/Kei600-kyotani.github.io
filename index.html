@@ -103,8 +103,13 @@ button.warn{border-color:#8b2020;background:#ffe6e6}
 //  kinds     : 列車種別(先頭が既定)。色は serviceClass() の4種(普通/快速/新快速/特急)以外は白地になります
 //  carsOptions / defaults : 両数の選択肢、既定の種別・両数・列車番号(省略可)
 //  stations  : 駅の並び。stop を省略した駅は全種別が停車、書いた駅はその種別のみ停車
+//   mark(任意): 固定停目。「停目確認」で「固定停目、○○」と案内する ○○ にあたる文字列(数字も可)。
+//               両数ごとに変えるときは {"8":"B","4":"A","*":"C"} のように書く("*"はその他の両数)。
+//               例) {name:"新大阪",lat:..,lon:..,mark:"6"}  /  {name:"京都",lat:..,lon:..,mark:{"8":"B","4":"A"}}
 // 駅座標は概略値。デモ用の直線距離判定であり、実際の線路形状・キロ程ではありません。
 const DEFAULT_CARS=[2,4,6,8,12];
+// 停目確認のアナウンス文。{m} が駅ごとの固定停目に置き換わる(表示は SUB、音声は VOICE)
+const STOPMARK_SUB="固定停目 {m}", STOPMARK_VOICE="停目確認。固定停目、{m}";
 const ROUTES={
  kyoto:{
   name:"JR京都線（テストデータ）",
@@ -129,27 +134,27 @@ const ROUTES={
   carsOptions:[2,4],
   defaults:{kind:"普通",cars:2,trainNo:"石坂線"},
   stations:[
-   {name:"石山寺",lat:34.9670538,lon:135.9033343},
-   {name:"唐橋前",lat:34.9729,lon:135.9015},
-   {name:"京阪石山",lat:34.979611,lon:135.899664},
-   {name:"粟津",lat:34.9854,lon:135.8958},
-   {name:"瓦ヶ浜",lat:34.9884,lon:135.8935},
-   {name:"中ノ庄",lat:34.9911358,lon:135.8914465},
-   {name:"膳所本町",lat:34.9951622,lon:135.8891675},
-   {name:"錦",lat:34.9977,lon:135.8850},
-   {name:"京阪膳所",lat:34.9997725,lon:135.8809181},
-   {name:"石場",lat:35.0049108,lon:135.8753354},
-   {name:"島ノ関",lat:35.0080,lon:135.8698},
-   {name:"びわ湖浜大津",lat:35.0110,lon:135.8640},
-   {name:"三井寺",lat:35.0130194,lon:135.8595250},
-   {name:"大津市役所前",lat:35.018375,lon:135.855655},
-   {name:"京阪大津京",lat:35.0231564,lon:135.855565},
-   {name:"近江神宮前",lat:35.0275,lon:135.8550},
-   {name:"南滋賀",lat:35.0325,lon:135.8540},
-   {name:"滋賀里",lat:35.0385,lon:135.8525},
-   {name:"穴太",lat:35.0490,lon:135.8505},
-   {name:"松ノ馬場",lat:35.0590,lon:135.8490},
-   {name:"坂本比叡山口",lat:35.0680,lon:135.8475}
+   {name:"石山寺",lat:34.9670538,lon:135.9033343,mark:"×"},
+   {name:"唐橋前",lat:34.9729,lon:135.9015,mark:"×"},
+   {name:"京阪石山",lat:34.979611,lon:135.899664,mark:"×"},
+   {name:"粟津",lat:34.9854,lon:135.8958,mark:"×"},
+   {name:"瓦ヶ浜",lat:34.9884,lon:135.8935,mark:"×"},
+   {name:"中ノ庄",lat:34.9911358,lon:135.8914465,mark:"×"},
+   {name:"膳所本町",lat:34.9951622,lon:135.8891675,mark:"×"},
+   {name:"錦",lat:34.9977,lon:135.8850,mark:"×"},
+   {name:"京阪膳所",lat:34.9997725,lon:135.8809181,mark:"×"},
+   {name:"石場",lat:35.0049108,lon:135.8753354,mark:"×"},
+   {name:"島ノ関",lat:35.0080,lon:135.8698,mark:"×"},
+   {name:"びわ湖浜大津",lat:35.0110,lon:135.8640,mark:"2"},
+   {name:"三井寺",lat:35.0130194,lon:135.8595250,mark:"×"},
+   {name:"大津市役所前",lat:35.018375,lon:135.855655,mark:"×"},
+   {name:"京阪大津京",lat:35.0231564,lon:135.855565,mark:"×"},
+   {name:"近江神宮前",lat:35.0275,lon:135.8550,mark:"×"},
+   {name:"南滋賀",lat:35.0325,lon:135.8540,mark:"×"},
+   {name:"滋賀里",lat:35.0385,lon:135.8525,mark:"×"},
+   {name:"穴太",lat:35.0490,lon:135.8505,mark:"×"},
+   {name:"松ノ馬場",lat:35.0590,lon:135.8490,mark:"×"},
+   {name:"坂本比叡山口",lat:35.0680,lon:135.8475,mark:"2"}
   ]
  }
 };
@@ -166,6 +171,10 @@ function validateRoute(o){
   if(!t||typeof t.name!=="string"||!t.name)return "stations["+i+"]: name が不正です";
   if(!Number.isFinite(t.lat)||!Number.isFinite(t.lon)||Math.abs(t.lat)>90||Math.abs(t.lon)>180)return "stations["+i+"]: lat/lon が不正です";
   if(t.stop!==undefined&&!Array.isArray(t.stop))return "stations["+i+"]: stop は配列で指定してください";
+  if(t.mark!==undefined){
+   const ok=v=>(typeof v==="string"&&v)||Number.isFinite(v);
+   if(!(ok(t.mark)||(t.mark&&typeof t.mark==="object"&&!Array.isArray(t.mark)&&Object.keys(t.mark).length&&Object.values(t.mark).every(ok))))return "stations["+i+"]: mark は文字列・数値、または両数ごとの {\"8\":\"B\"} 形式で指定してください";
+  }
  }
  return null;
 }
@@ -210,6 +219,12 @@ function buildRoute(){
 }
 // stop 未指定の駅は全種別が停車
 const stopsAt=(st,kind)=>!st.stop||st.stop.includes(kind);
+// 駅の固定停目(両数ごとの指定があればそれを優先、"*"はその他)。なければ空文字
+function markOf(st,cars){
+ const m=st.mark;if(m===undefined||m===null)return "";
+ if(typeof m==="object"){const v=m[String(cars)]!==undefined?m[String(cars)]:m["*"];return v===undefined?"":String(v)}
+ return String(m);
+}
 // from より先で最初に停車する駅。該当なしなら終点を返す
 function nextStopIdx(from){
  for(let i=from+1;i<R.st.length;i++)if(stopsAt(R.st[i],S.kind))return i;
@@ -249,8 +264,10 @@ function render(){
  // 短い駅間でも出発直後に警告が出ないよう、案内距離を駅間の長さに合わせて縮める
  const seg=R.cum[ni]-R.cum[S.departIdx],lim1=Math.min(800,seg*0.5),lim2=Math.min(200,seg*0.2);
  if(d<=lim2){
-  $("main").classList.add("alert");$("station").textContent="停目確認";$("subline").textContent=S.cars+"両停車";
-  speak("停目確認。"+S.cars+"両停車","stopmark-"+ni);
+  const mk=markOf(R.st[ni],S.cars);
+  $("main").classList.add("alert");$("station").textContent="停目確認";
+  $("subline").textContent=mk?STOPMARK_SUB.replace("{m}",mk):S.cars+"両停車";
+  speak(mk?STOPMARK_VOICE.replace("{m}",mk.replace(/[×✕✗]/g,"バツ")):"停目確認。"+S.cars+"両停車","stopmark-"+ni);
  }else if(d<=lim1){
   $("main").classList.add("alert");$("station").textContent="停　車";$("subline").textContent="停車位置案内（シミュレーション）";
   speak("停車、停車、停車","brake-"+ni);
